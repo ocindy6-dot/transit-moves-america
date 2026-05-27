@@ -249,11 +249,10 @@ function render() {
           }).join("")}
         </tbody>
       </table>
-      <div class="tbl-footer">
-        <span>Showing ${rows.length} agencies · ${modeLabel}</span>
-        <a href="https://datahub.transportation.gov/dataset/pgwk-wjqa" target="_blank" class="dl-link">↓ Download full dataset</a>
-      </div>
-    </div>`;
+      <div class="source-note" style="line-height: 1.5;">
+  <strong>Rider security:</strong> How often serious incidents affect passengers on bus and rail, by agency, with a six-month rolling trend and national comparison.<br>
+  <span style="opacity: 0.85;">Source: <a href="https://datahub.transportation.gov/dataset/pgwk-wjqa" target="_blank" style="color:var(--navy); text-decoration: none; border-bottom: 1px dotted var(--navy);">FTA National Transit Database</a></span>
+</div>`;
 
   document.getElementById("count-label").textContent = `${rows.length} agencies · ${modeLabel}`;
 }
