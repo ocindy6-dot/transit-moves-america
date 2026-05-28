@@ -91,11 +91,6 @@
   @keyframes spin { to { transform: rotate(360deg); } }
   .error-msg { color: #791F1F; }
   .progress-text { font-size: 11px; color: var(--muted); margin-top: 6px; }
-  .mode-badge {
-    display: inline-block; padding: 1px 7px; border-radius: 3px;
-    font-size: 10px; font-weight: 700; letter-spacing: 0.05em;
-    background: #E8EFF8; color: var(--navy);
-  }
 </style>
 </head>
 <body>
@@ -121,33 +116,25 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // CONFIGURATION
 // ─────────────────────────────────────────────────────────────────────────────
-// Helper function to dynamically calculate dates (formatted for the NTD API)
-const getDynamicDate = (monthsAgo) => {
-  const d = new Date();
-  d.setMonth(d.getMonth() - monthsAgo);
-  // Formats to match Socrata API requirement: YYYY-MM-DDT00:00:00.000
-  return d.toISOString().split('T')[0] + "T00:00:00.000";
-};
-
 const CONFIG = {
   BASE_URL:  "https://data.transportation.gov/resource/pgwk-wjqa.json",
   PAGE_SIZE: 10000,
 
-  // Hard filters applied at the API level — only pull exactly the rows we need
+  // The rate column is already a 6-month rolling average baked into the data.
+  // We don't need a date range — just pull the most recent month per agency
+  // by sorting month_year DESC at the API level, then deduplicating in JS.
   FILTERS: {
-    month_year_start: getDynamicDate(4), // Automatically 4 months ago
-    month_year_end:   getDynamicDate(0), // Automatically today
-    metric:           "event_count",
-    event_type:       "Major Passenger Assaults and Homicides",
+    metric:     "event_count",
+    event_type: "Major Passenger Assaults and Homicides"
   },
 
   COLUMNS: {
-    agency: "agency",
-    uza:    "primary_uza_name",
-    upt:    "ridership_6mo_avg",
-    rate:   "metric_ridership_6mo_avg_rate",
-    mode:   "rail_bus_ferry",
-    metric: "metric",
+    agency:     "agency",
+    uza:        "primary_uza_name",
+    upt:        "ridership_6mo_avg",
+    rate:       "metric_ridership_6mo_avg_rate",
+    mode:       "rail_bus_ferry",
+    metric:     "metric",
     event_type: "event_type",
     month_year: "month_year"
   },
@@ -156,8 +143,7 @@ const CONFIG = {
 };
 // ─────────────────────────────────────────────────────────────────────────────
 
-// allData buckets keyed by mode value from API ("Bus", "Rail") plus "all"
-let allData = { all: [], Bus: [], Rail: [] };
+let allData = { Bus: [], Rail: [] };
 let mode    = "Bus";
 let sortKey = "rate";
 let sortDir = "desc";
@@ -166,69 +152,74 @@ let sortDir = "desc";
 function buildWhere() {
   const f = CONFIG.FILTERS;
   const c = CONFIG.COLUMNS;
-  // Filter: date range, metric = event_count, event_type, mode Bus OR Rail
   return [
-    `${c.month_year} >= '${f.month_year_start}'`,
-    `${c.month_year} <= '${f.month_year_end}'`,
     `${c.metric} = '${f.metric}'`,
     `${c.event_type} = '${f.event_type}'`,
     `(${c.mode} = 'Bus' OR ${c.mode} = 'Rail')`
   ].join(" AND ");
 }
 
-// ── Paginated fetch ───────────────────────────────────────────────────────────
+// ── Paginated fetch, sorted newest-first, then deduplicate ───────────────────
 async function loadData() {
   const progressEl = document.getElementById("progress-text");
   let offset = 0;
   let total  = 0;
-  allData    = { all: [], Bus: [], Rail: [] };
+  // seen key: "agency|mode" — keeps only the first (most recent) row per pair
+  const seen = new Set();
+  allData    = { Bus: [], Rail: [] };
 
-  const where = buildWhere();
+  const where   = buildWhere();
+  const orderBy = `${CONFIG.COLUMNS.month_year} DESC`;
 
   try {
     while (true) {
-      const url = `${CONFIG.BASE_URL}?$limit=${CONFIG.PAGE_SIZE}&$offset=${offset}&$where=${encodeURIComponent(where)}`;
+      const url = `${CONFIG.BASE_URL}?$limit=${CONFIG.PAGE_SIZE}&$offset=${offset}` +
+                  `&$where=${encodeURIComponent(where)}` +
+                  `&$order=${encodeURIComponent(orderBy)}`;
 
       const resp = await fetch(url);
       if (!resp.ok) throw new Error(`API error ${resp.status}: ${resp.statusText}`);
 
       const page = await resp.json();
 
-      // Inspect first row in console to verify column names & values
       if (offset === 0 && page.length > 0) {
-        console.log("First row keys:", Object.keys(page[0]));
+        console.log("First row keys:",   Object.keys(page[0]));
         console.log("First row sample:", page[0]);
       }
 
       page.forEach(row => {
-        const rate = parseFloat(row[CONFIG.COLUMNS.rate]);
-        const upt  = parseFloat(row[CONFIG.COLUMNS.upt]);
-        if (isNaN(rate)) return;
+        const rate    = parseFloat(row[CONFIG.COLUMNS.rate]);
+        const upt     = parseFloat(row[CONFIG.COLUMNS.upt]);
+        const modeVal = (row[CONFIG.COLUMNS.mode] || "").trim();
 
-        const modeVal = (row[CONFIG.COLUMNS.mode] || "").trim(); // "Bus" or "Rail"
+        if (isNaN(rate)) return;
+        if (modeVal !== "Bus" && modeVal !== "Rail") return;
+
+        // Dedup key: one row per agency+mode combination (most recent wins
+        // because we sorted DESC before paginating)
+        const key = `${row[CONFIG.COLUMNS.agency]}|${modeVal}`;
+        if (seen.has(key)) return;
+        seen.add(key);
 
         const entry = {
-          agency:  row[CONFIG.COLUMNS.agency]     || "Unknown",
-          uza:     row[CONFIG.COLUMNS.uza]         || "Unknown",
-          upt:     isNaN(upt) ? null : upt,
-          rate:    rate,
-          mode:    modeVal,
-          month:   row[CONFIG.COLUMNS.month_year] || ""
+          agency: row[CONFIG.COLUMNS.agency]     || "Unknown",
+          uza:    row[CONFIG.COLUMNS.uza]         || "Unknown",
+          upt:    isNaN(upt) ? null : upt,
+          rate:   rate,
+          month:  row[CONFIG.COLUMNS.month_year]  || ""
         };
 
-        allData.all.push(entry);
-        if (modeVal === "Bus")  allData.Bus.push(entry);
-        if (modeVal === "Rail") allData.Rail.push(entry);
+        allData[modeVal].push(entry);
       });
 
       total  += page.length;
       offset += CONFIG.PAGE_SIZE;
-      progressEl.textContent = `${total.toLocaleString()} rows loaded…`;
+      progressEl.textContent = `${total.toLocaleString()} rows scanned…`;
 
       if (page.length < CONFIG.PAGE_SIZE) break;
     }
 
-    console.log(`Load complete — all: ${allData.all.length}, Bus: ${allData.Bus.length}, Rail: ${allData.Rail.length}`);
+    console.log(`Load complete — Bus: ${allData.Bus.length}, Rail: ${allData.Rail.length}`);
     render();
 
   } catch (err) {
@@ -237,7 +228,7 @@ async function loadData() {
       <div class="state-msg error-msg">
         <div style="font-weight:700;margin-bottom:6px;">Could not load data</div>
         <div style="font-size:12px;opacity:0.8;">${err.message}</div>
-        <div style="font-size:11px;margin-top:8px;opacity:0.6;">Check console for details. Verify column names match the dataset.</div>
+        <div style="font-size:11px;margin-top:8px;opacity:0.6;">Check console for details.</div>
       </div>`;
     document.getElementById("count-label").textContent = "Error loading data";
   }
@@ -259,29 +250,33 @@ function setSort(key) {
 function render() {
   const pool = allData[mode] || [];
 
-  // Sort full pool FIRST, then slice to TOP_N
   const rows = [...pool].sort((a, b) => {
     let av, bv;
-    if      (sortKey === "agency") { av = a.agency; bv = b.agency; }
-    else if (sortKey === "uza")    { av = a.uza;    bv = b.uza;    }
-    else if (sortKey === "upt")    { av = a.upt ?? 0; bv = b.upt ?? 0; }
-    else if (sortKey === "mode")   { av = a.mode;   bv = b.mode;   }
-    else                           { av = a.rate;   bv = b.rate;   }
+    if      (sortKey === "agency") { av = a.agency;   bv = b.agency;   }
+    else if (sortKey === "uza")    { av = a.uza;       bv = b.uza;      }
+    else if (sortKey === "upt")    { av = a.upt ?? 0;  bv = b.upt ?? 0; }
+    else                           { av = a.rate;      bv = b.rate;     }
 
-    if (sortKey === "agency" || sortKey === "uza" || sortKey === "mode") {
+    if (sortKey === "agency" || sortKey === "uza") {
       return sortDir === "asc" ? av.localeCompare(bv) : bv.localeCompare(av);
     }
     return sortDir === "asc" ? av - bv : bv - av;
   }).slice(0, CONFIG.TOP_N);
 
-  const modeLabel = { Bus: "Bus", Rail: "Rail" }[mode] || mode;
+  const modeLabel = mode;
 
   if (!rows.length) {
     document.getElementById("table-container").innerHTML =
-      `<div class="state-msg">No data found for "${modeLabel}".<br><span style="font-size:11px;opacity:0.7;">Check console — column names or filter values may not match the API.</span></div>`;
+      `<div class="state-msg">No data found for "${modeLabel}".<br>
+       <span style="font-size:11px;opacity:0.7;">Check console — filter values may not match the API exactly.</span></div>`;
     document.getElementById("count-label").textContent = `0 agencies · ${modeLabel}`;
     return;
   }
+
+  // Show the as-of date from the first row
+  const asOf = rows[0].month
+    ? new Date(rows[0].month).toLocaleDateString("en-US", { month: "long", year: "numeric" })
+    : "latest available";
 
   const arrow = dir => dir === "asc" ? " ↑" : " ↓";
   const sa    = k   => sortKey === k ? arrow(sortDir) : " ↕";
@@ -310,7 +305,8 @@ function render() {
         </tbody>
       </table>
       <div class="source-note">
-        <strong>Rider security:</strong> Major passenger assaults &amp; homicides — event count rate (6-month rolling avg), Dec 2025–Dec 2026, bus and rail only.<br>
+        <strong>Rider security:</strong> Major passenger assaults &amp; homicides — event count rate (6-month rolling avg),
+        most recent data as of ${asOf}, bus and rail only.<br>
         Source: <a href="https://data.transportation.gov/dataset/S-and-S-Agency-Profiles/pgwk-wjqa"
           target="_blank"
           style="color:var(--navy);text-decoration:none;border-bottom:1px dotted var(--navy);">
