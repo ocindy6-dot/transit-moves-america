@@ -18,9 +18,7 @@
     --bg:       #EEF4FB;
     --card:     #ffffff;
     --row-alt:  #f7fafd;
-    --green-bg: #EAF3DE; --green-tx: #27500A;
     --amber-bg: #FAEEDA; --amber-tx: #633806;
-    --red-bg:   #FCEBEB; --red-tx:   #791F1F;
   }
   html, body {
     font-family: 'Open Sans', Arial, sans-serif;
@@ -75,11 +73,11 @@
   .rate-chip {
     display: inline-block; padding: 2px 8px;
     border-radius: 4px; font-size: 11px; font-weight: 700;
+    background: var(--amber-bg); color: var(--amber-tx);
   }
-  .rc-a { background: var(--amber-bg); color: var(--amber-tx); }
   .source-note {
     font-size: 10px; color: var(--muted);
-    line-height: 1.5; padding: 10px 14px; opacity: 0.75;
+    line-height: 1.5; padding: 10px 14px;
   }
   .state-msg {
     background: var(--card); border-radius: 10px; border: 0.5px solid var(--rule);
@@ -93,6 +91,11 @@
   @keyframes spin { to { transform: rotate(360deg); } }
   .error-msg { color: #791F1F; }
   .progress-text { font-size: 11px; color: var(--muted); margin-top: 6px; }
+  .mode-badge {
+    display: inline-block; padding: 1px 7px; border-radius: 3px;
+    font-size: 10px; font-weight: 700; letter-spacing: 0.05em;
+    background: #E8EFF8; color: var(--navy);
+  }
 </style>
 </head>
 <body>
@@ -100,17 +103,16 @@
 <div class="controls">
   <span class="ctrl-label">Mode</span>
   <div class="toggle">
-    <button class="t-btn active" onclick="setMode('all', this)">All modes</button>
-    <button class="t-btn"        onclick="setMode('bus', this)">Bus</button>
-    <button class="t-btn"        onclick="setMode('rail', this)">Rail</button>
+    <button class="t-btn active" onclick="setMode('Bus', this)">Bus</button>
+    <button class="t-btn"        onclick="setMode('Rail', this)">Rail</button>
   </div>
-  <span class="count" id="count-label">Loading...</span>
+  <span class="count" id="count-label">Loading…</span>
 </div>
 
 <div id="table-container">
   <div class="state-msg">
     <div class="spinner"></div>
-    <div>Loading agency data from NTD...</div>
+    <div>Loading agency data from NTD…</div>
     <div class="progress-text" id="progress-text"></div>
   </div>
 </div>
@@ -120,70 +122,75 @@
 // CONFIGURATION
 // ─────────────────────────────────────────────────────────────────────────────
 const CONFIG = {
-  // FIXED: correct domain (data.transportation.gov, not datahub.transportation.gov)
-  // Using $limit=50000 — SODA 2.0 supports up to 50,000 rows in a single call.
-  // We also paginate as a safeguard in case the dataset exceeds 50k rows.
-  BASE_URL:    "https://data.transportation.gov/resource/pgwk-wjqa.json",
-  PAGE_SIZE:   10000,   // rows per paginated request
+  BASE_URL:  "https://data.transportation.gov/resource/pgwk-wjqa.json",
+  PAGE_SIZE: 10000,
+
+  // Hard filters applied at the API level — only pull exactly the rows we need
+  FILTERS: {
+    month_year_start: "2025-12-01T00:00:00.000",
+    month_year_end:   "2026-12-31T23:59:59.000",
+    metric:           "event_count",
+    event_type:       "Major Passenger Assaults and Homicides",
+    // rail_bus_ferry: "Bus" or "Rail" — handled in WHERE clause below
+  },
 
   COLUMNS: {
     agency: "agency",
     uza:    "primary_uza_name",
     upt:    "ridership_6mo_avg",
     rate:   "metric_ridership_6mo_avg_rate",
-    mode:   "rail_bus_ferry"
+    mode:   "rail_bus_ferry",
+    metric: "metric",
+    event_type: "event_type",
+    month_year: "month_year"
   },
 
   TOP_N: 25
 };
 // ─────────────────────────────────────────────────────────────────────────────
 
-let allData  = { all: [], bus: [], rail: [] };
-let mode     = "all";
-let sortKey  = "rate";
-let sortDir  = "desc";
+// allData buckets keyed by mode value from API ("Bus", "Rail") plus "all"
+let allData = { all: [], Bus: [], Rail: [] };
+let mode    = "Bus";
+let sortKey = "rate";
+let sortDir = "desc";
 
-// ── Helper: classify a row's mode value into bus / rail / other ──────────────
-function classifyMode(rawVal) {
-  // rawVal examples from NTD: "Bus", "Rail", "MB", "HR", "LR", "CR", "FB", "DR" …
-  const v = (rawVal || "").trim().toLowerCase();
-
-  // 2-letter NTD mode codes — bus family
-  const BUS_CODES  = new Set(["mb","cb","rb","tb","pb","jt","vp","dr","or","ar"]);
-  // 2-letter NTD mode codes — rail family
-  const RAIL_CODES = new Set(["hr","lr","cr","sr","mg","yr","cc","mo","ip","ar"]);
-
-  // Full-word / phrase matching (handles "Bus", "Rail", "Heavy Rail", etc.)
-  const isBus  = v === "bus"  || v.includes("bus")  || BUS_CODES.has(v);
-  const isRail = v === "rail" || v.includes("rail") || RAIL_CODES.has(v);
-
-  return { isBus, isRail };
+// ── Build the SOQL WHERE clause ───────────────────────────────────────────────
+function buildWhere() {
+  const f = CONFIG.FILTERS;
+  const c = CONFIG.COLUMNS;
+  // Filter: date range, metric = event_count, event_type, mode Bus OR Rail
+  return [
+    `${c.month_year} >= '${f.month_year_start}'`,
+    `${c.month_year} <= '${f.month_year_end}'`,
+    `${c.metric} = '${f.metric}'`,
+    `${c.event_type} = '${f.event_type}'`,
+    `(${c.mode} = 'Bus' OR ${c.mode} = 'Rail')`
+  ].join(" AND ");
 }
 
-// ── Paginated data fetch ──────────────────────────────────────────────────────
+// ── Paginated fetch ───────────────────────────────────────────────────────────
 async function loadData() {
   const progressEl = document.getElementById("progress-text");
   let offset = 0;
   let total  = 0;
-  allData    = { all: [], bus: [], rail: [] };
+  allData    = { all: [], Bus: [], Rail: [] };
+
+  const where = buildWhere();
 
   try {
     while (true) {
-      const url =
-        `${CONFIG.BASE_URL}` +
-        `?$limit=${CONFIG.PAGE_SIZE}` +
-        `&$offset=${offset}` +
-        `&$where=${encodeURIComponent("metric_ridership_6mo_avg_rate IS NOT NULL")}`;
+      const url = `${CONFIG.BASE_URL}?$limit=${CONFIG.PAGE_SIZE}&$offset=${offset}&$where=${encodeURIComponent(where)}`;
 
       const resp = await fetch(url);
       if (!resp.ok) throw new Error(`API error ${resp.status}: ${resp.statusText}`);
 
       const page = await resp.json();
 
-      // Log first row on first page so you can inspect real column names in console
+      // Inspect first row in console to verify column names & values
       if (offset === 0 && page.length > 0) {
-        console.log("NTD first row keys:", Object.keys(page[0]));
-        console.log("NTD first row sample:", page[0]);
+        console.log("First row keys:", Object.keys(page[0]));
+        console.log("First row sample:", page[0]);
       }
 
       page.forEach(row => {
@@ -191,33 +198,30 @@ async function loadData() {
         const upt  = parseFloat(row[CONFIG.COLUMNS.upt]);
         if (isNaN(rate)) return;
 
+        const modeVal = (row[CONFIG.COLUMNS.mode] || "").trim(); // "Bus" or "Rail"
+
         const entry = {
-          agency: row[CONFIG.COLUMNS.agency] || "Unknown",
-          uza:    row[CONFIG.COLUMNS.uza]    || "Unknown",
-          upt:    isNaN(upt) ? null : upt,
-          rate:   rate,
-          rawMode: row[CONFIG.COLUMNS.mode] || ""
+          agency:  row[CONFIG.COLUMNS.agency]     || "Unknown",
+          uza:     row[CONFIG.COLUMNS.uza]         || "Unknown",
+          upt:     isNaN(upt) ? null : upt,
+          rate:    rate,
+          mode:    modeVal,
+          month:   row[CONFIG.COLUMNS.month_year] || ""
         };
 
         allData.all.push(entry);
-
-        const { isBus, isRail } = classifyMode(entry.rawMode);
-        if (isBus)  allData.bus.push(entry);
-        if (isRail) allData.rail.push(entry);
+        if (modeVal === "Bus")  allData.Bus.push(entry);
+        if (modeVal === "Rail") allData.Rail.push(entry);
       });
 
       total  += page.length;
       offset += CONFIG.PAGE_SIZE;
-
       progressEl.textContent = `${total.toLocaleString()} rows loaded…`;
 
-      // Stop when the server returns fewer rows than the page size
       if (page.length < CONFIG.PAGE_SIZE) break;
     }
 
-    // Log mode breakdown so you can verify the toggle is working
-    console.log(`NTD load complete — all: ${allData.all.length}, bus: ${allData.bus.length}, rail: ${allData.rail.length}`);
-
+    console.log(`Load complete — all: ${allData.all.length}, Bus: ${allData.Bus.length}, Rail: ${allData.Rail.length}`);
     render();
 
   } catch (err) {
@@ -226,6 +230,7 @@ async function loadData() {
       <div class="state-msg error-msg">
         <div style="font-weight:700;margin-bottom:6px;">Could not load data</div>
         <div style="font-size:12px;opacity:0.8;">${err.message}</div>
+        <div style="font-size:11px;margin-top:8px;opacity:0.6;">Check console for details. Verify column names match the dataset.</div>
       </div>`;
     document.getElementById("count-label").textContent = "Error loading data";
   }
@@ -247,26 +252,26 @@ function setSort(key) {
 function render() {
   const pool = allData[mode] || [];
 
-  // FIXED: sort the FULL dataset first, THEN slice to TOP_N
-  const sorted = [...pool].sort((a, b) => {
+  // Sort full pool FIRST, then slice to TOP_N
+  const rows = [...pool].sort((a, b) => {
     let av, bv;
-    if (sortKey === "agency") { av = a.agency; bv = b.agency; }
-    else if (sortKey === "uza") { av = a.uza; bv = b.uza; }
-    else if (sortKey === "upt") { av = a.upt ?? 0; bv = b.upt ?? 0; }
-    else { av = a.rate; bv = b.rate; }
+    if      (sortKey === "agency") { av = a.agency; bv = b.agency; }
+    else if (sortKey === "uza")    { av = a.uza;    bv = b.uza;    }
+    else if (sortKey === "upt")    { av = a.upt ?? 0; bv = b.upt ?? 0; }
+    else if (sortKey === "mode")   { av = a.mode;   bv = b.mode;   }
+    else                           { av = a.rate;   bv = b.rate;   }
 
-    if (sortKey === "agency" || sortKey === "uza") {
+    if (sortKey === "agency" || sortKey === "uza" || sortKey === "mode") {
       return sortDir === "asc" ? av.localeCompare(bv) : bv.localeCompare(av);
     }
     return sortDir === "asc" ? av - bv : bv - av;
-  });
+  }).slice(0, CONFIG.TOP_N);
 
-  const rows       = sorted.slice(0, CONFIG.TOP_N);
-  const modeLabel  = { all: "All modes", bus: "Bus", rail: "Rail" }[mode];
+  const modeLabel = { Bus: "Bus", Rail: "Rail" }[mode] || mode;
 
   if (!rows.length) {
     document.getElementById("table-container").innerHTML =
-      `<div class="state-msg">No data found for mode "${modeLabel}".</div>`;
+      `<div class="state-msg">No data found for "${modeLabel}".<br><span style="font-size:11px;opacity:0.7;">Check console — column names or filter values may not match the API.</span></div>`;
     document.getElementById("count-label").textContent = `0 agencies · ${modeLabel}`;
     return;
   }
@@ -280,9 +285,9 @@ function render() {
         <thead>
           <tr>
             <th onclick="setSort('agency')" class="${sortKey==='agency'?'sorted':''}">Agency${sa('agency')}</th>
-            <th onclick="setSort('uza')"    class="${sortKey==='uza'?'sorted':''}">UZA${sa('uza')}</th>
-            <th onclick="setSort('upt')"    class="${sortKey==='upt'?'sorted r':'r'}">UPT (6MRA)${sa('upt')}</th>
-            <th onclick="setSort('rate')"   class="${sortKey==='rate'?'sorted r':'r'}">Rate (6MRA)${sa('rate')}</th>
+            <th onclick="setSort('uza')"    class="${sortKey==='uza'   ?'sorted':''}">UZA${sa('uza')}</th>
+            <th onclick="setSort('upt')"    class="${sortKey==='upt'   ?'sorted r':'r'}">UPT (6MRA)${sa('upt')}</th>
+            <th onclick="setSort('rate')"   class="${sortKey==='rate'  ?'sorted r':'r'}">Rate (6MRA)${sa('rate')}</th>
           </tr>
         </thead>
         <tbody>
@@ -293,13 +298,12 @@ function render() {
               <td class="r" style="color:var(--muted);">
                 ${row.upt !== null ? row.upt.toLocaleString(undefined,{maximumFractionDigits:0}) : "—"}
               </td>
-              <td class="r"><span class="rate-chip rc-a">${row.rate.toFixed(2)}</span></td>
+              <td class="r"><span class="rate-chip">${row.rate.toFixed(2)}</span></td>
             </tr>`).join("")}
         </tbody>
       </table>
       <div class="source-note">
-        <strong>Rider security:</strong> How often serious incidents affect passengers on bus and rail, by agency,
-        with a six-month rolling trend and national comparison.<br>
+        <strong>Rider security:</strong> Major passenger assaults &amp; homicides — event count rate (6-month rolling avg), Dec 2025–Dec 2026, bus and rail only.<br>
         Source: <a href="https://data.transportation.gov/dataset/S-and-S-Agency-Profiles/pgwk-wjqa"
           target="_blank"
           style="color:var(--navy);text-decoration:none;border-bottom:1px dotted var(--navy);">
