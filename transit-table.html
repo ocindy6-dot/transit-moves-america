@@ -24,7 +24,7 @@
     font-family: 'Open Sans', Arial, sans-serif;
     background: var(--bg); color: var(--ink);
     font-size: 14px; padding: 10px; margin: 0;
-    overflow: hidden; /* Removes the inner iframe scrollbar */
+    overflow: hidden;
   }
   .controls {
     display: flex; align-items: center; gap: 10px;
@@ -144,10 +144,11 @@ const CONFIG = {
     mode:       "rail_bus_ferry",
     metric:     "metric",
     event_type: "event_type",
-    month_year: "month_year"
+    month_year: "month_year",
+    value:      "value" // <--- Added the new Value column here
   },
 
-  ROWS_PER_PAGE: 10 // Changed from TOP_N to pagination display limit
+  ROWS_PER_PAGE: 10
 };
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -155,7 +156,7 @@ let allData     = { Bus: [], Rail: [] };
 let mode        = "Bus";
 let sortKey     = "rate";
 let sortDir     = "desc";
-let currentPage = 0; // Track the current page row viewing context
+let currentPage = 0;
 
 function buildWhere() {
   const f = CONFIG.FILTERS;
@@ -191,6 +192,7 @@ async function loadData() {
       page.forEach(row => {
         const rate    = parseFloat(row[CONFIG.COLUMNS.rate]);
         const upt     = parseFloat(row[CONFIG.COLUMNS.upt]);
+        const val     = parseFloat(row[CONFIG.COLUMNS.value]); // Grab the value
         const modeVal = (row[CONFIG.COLUMNS.mode] || "").trim();
 
         if (isNaN(rate)) return;
@@ -202,10 +204,11 @@ async function loadData() {
 
         const entry = {
           agency: row[CONFIG.COLUMNS.agency]     || "Unknown",
-          uza:    row[CONFIG.COLUMNS.uza]         || "Unknown",
+          uza:    row[CONFIG.COLUMNS.uza]        || "Unknown",
           upt:    isNaN(upt) ? null : upt,
+          value:  isNaN(val) ? null : val,       // Add the value to our internal memory
           rate:   rate,
-          month:  row[CONFIG.COLUMNS.month_year]  || ""
+          month:  row[CONFIG.COLUMNS.month_year] || ""
         };
 
         allData[modeVal].push(entry);
@@ -233,7 +236,7 @@ async function loadData() {
 
 function setMode(m, btn) {
   mode = m;
-  currentPage = 0; // Reset to page 1 on mode switch
+  currentPage = 0; 
   document.querySelectorAll(".t-btn").forEach(b => b.classList.remove("active"));
   btn.classList.add("active");
   render();
@@ -242,7 +245,7 @@ function setMode(m, btn) {
 function setSort(key) {
   if (sortKey === key) sortDir = sortDir === "asc" ? "desc" : "asc";
   else { sortKey = key; sortDir = "desc"; }
-  currentPage = 0; // Reset to page 1 on sort switch
+  currentPage = 0; 
   render();
 }
 
@@ -254,13 +257,13 @@ function changePage(step) {
 function render() {
   const pool = allData[mode] || [];
 
-  // Sort the full pool first
   const sortedPool = [...pool].sort((a, b) => {
     let av, bv;
-    if      (sortKey === "agency") { av = a.agency;   bv = b.agency;   }
-    else if (sortKey === "uza")    { av = a.uza;       bv = b.uza;      }
-    else if (sortKey === "upt")    { av = a.upt ?? 0;  bv = b.upt ?? 0; }
-    else                           { av = a.rate;      bv = b.rate;     }
+    if      (sortKey === "agency") { av = a.agency;    bv = b.agency;    }
+    else if (sortKey === "uza")    { av = a.uza;       bv = b.uza;       }
+    else if (sortKey === "upt")    { av = a.upt ?? 0;  bv = b.upt ?? 0;  }
+    else if (sortKey === "value")  { av = a.value ?? 0; bv = b.value ?? 0; } // Sort logic for Value
+    else                           { av = a.rate;      bv = b.rate;      }
 
     if (sortKey === "agency" || sortKey === "uza") {
       return sortDir === "asc" ? av.localeCompare(bv) : bv.localeCompare(av);
@@ -268,7 +271,6 @@ function render() {
     return sortDir === "asc" ? av - bv : bv - av;
   });
 
-  // Paginate calculation
   const startIdx = currentPage * CONFIG.ROWS_PER_PAGE;
   const endIdx   = startIdx + CONFIG.ROWS_PER_PAGE;
   const rows     = sortedPool.slice(startIdx, endIdx);
@@ -295,6 +297,7 @@ function render() {
             <th onclick="setSort('agency')" class="${sortKey==='agency'?'sorted':''}">Agency${sa('agency')}</th>
             <th onclick="setSort('uza')"    class="${sortKey==='uza'   ?'sorted':''}">UZA${sa('uza')}</th>
             <th onclick="setSort('upt')"    class="${sortKey==='upt'   ?'sorted r':'r'}">UPT (6MRA)${sa('upt')}</th>
+            <th onclick="setSort('value')"  class="${sortKey==='value' ?'sorted r':'r'}">Value${sa('value')}</th>
             <th onclick="setSort('rate')"   class="${sortKey==='rate'  ?'sorted r':'r'}">Rate (6MRA)${sa('rate')}</th>
           </tr>
         </thead>
@@ -305,6 +308,9 @@ function render() {
               <td style="color:var(--muted);">${row.uza}</td>
               <td class="r" style="color:var(--muted);">
                 ${row.upt !== null ? row.upt.toLocaleString(undefined,{maximumFractionDigits:0}) : "—"}
+              </td>
+              <td class="r" style="font-weight:600;color:var(--ink);">
+                ${row.value !== null ? row.value.toLocaleString(undefined,{maximumFractionDigits:0}) : "—"}
               </td>
               <td class="r"><span class="rate-chip">${row.rate.toFixed(2)}</span></td>
             </tr>`).join("")}
