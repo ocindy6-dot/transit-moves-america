@@ -23,7 +23,11 @@
   html, body {
     font-family: 'Open Sans', Arial, sans-serif;
     background: var(--bg); color: var(--ink);
-    font-size: 14px; padding: 20px; min-height: 100vh;
+    font-size: 14px; 
+    padding: 10px; /* Reduced padding for embedded views */
+    margin: 0;
+    overflow-x: hidden; /* Prevents side-to-side scrolling */
+    /* Removed the min-height: 100vh which causes the double scroll */
   }
   .controls {
     display: flex; align-items: center; gap: 10px;
