@@ -77,13 +77,6 @@
     border-radius: 4px; font-size: 11px; font-weight: 700;
   }
   .rc-a { background: var(--amber-bg); color: var(--amber-tx); }
-  .tbl-footer {
-    display: flex; align-items: center; justify-content: space-between;
-    padding: 10px 14px; background: var(--row-alt);
-    border-top: 0.5px solid var(--rule); font-size: 11px; color: var(--muted);
-  }
-  .dl-link { color: var(--navy); font-weight: 700; text-decoration: none; font-size: 11px; }
-  .dl-link:hover { text-decoration: underline; }
   .source-note { font-size: 10px; color: var(--muted); margin-top: 10px; opacity: 0.75; }
   .state-msg {
     background: var(--card); border-radius: 10px; border: 0.5px solid var(--rule);
@@ -117,29 +110,21 @@
   </div>
 </div>
 
-<div class="source-note">
-  Source: FTA National Transit Database (NTD) · Major incidents per 1M UPT ·
-  <a href="https://datahub.transportation.gov/dataset/pgwk-wjqa"
-     target="_blank" style="color:var(--navy);">data.transportation.gov</a>
-</div>
-
 <script>
 // ─────────────────────────────────────────────────────────────────────────────
 // CONFIGURATION 
 // ─────────────────────────────────────────────────────────────────────────────
 const CONFIG = {
-  // Uses the SODA API /resource/ endpoint, limited to 2000 rows to prevent hanging
-  DATASET_URL: "https://datahub.transportation.gov/resource/pgwk-wjqa.json?$limit=2000",
+  DATASET_URL: "https://datahub.transportation.gov/resource/pgwk-wjqa.json?$limit=2000&$order=ridership_6mo_avg DESC NULLS LAST",
 
   COLUMNS: {
     agency: "agency",
     uza:    "primary_uza_name",
     upt:    "ridership_6mo_avg",
     rate:   "metric_ridership_6mo_avg_rate",
-    mode:   "mode_type" // Used by the toggle buttons
+    mode:   "rail_bus_ferry" // Updated to correctly reference your column
   },
 
-  MODE_VALUES: { all:"All", bus:"Bus", rail:"Rail" },
   TOP_N: 25
 };
 // ─────────────────────────────────────────────────────────────────────────────
@@ -155,13 +140,18 @@ async function loadData() {
     if (!response.ok) throw new Error(`API error ${response.status}: ${response.statusText}`);
 
     const raw = await response.json();
+    
+    // Developer helper: logs the first row's columns to your browser console
+    console.log("Dataset First Row Data:", raw[0]);
 
     allData = { all:[], bus:[], rail:[] };
 
     raw.forEach(row => {
-      const modeVal = (row[CONFIG.COLUMNS.mode] || "all").toLowerCase();
-      const rate    = parseFloat(row[CONFIG.COLUMNS.rate]);
-      const upt     = parseFloat(row[CONFIG.COLUMNS.upt]);
+      // Safely pull the rail_bus_ferry column and convert to lowercase for easy matching
+      const modeVal = (row[CONFIG.COLUMNS.mode] || "").toLowerCase();
+      
+      const rate = parseFloat(row[CONFIG.COLUMNS.rate]);
+      const upt  = parseFloat(row[CONFIG.COLUMNS.upt]);
 
       if (isNaN(rate)) return;
 
@@ -173,8 +163,13 @@ async function loadData() {
       };
 
       allData.all.push(entry);
-      if (modeVal.includes(CONFIG.MODE_VALUES.bus.toLowerCase())) allData.bus.push(entry);
-      if (modeVal.includes(CONFIG.MODE_VALUES.rail.toLowerCase())) allData.rail.push(entry);
+
+      // Filter logic targeting 'bus' and 'rail' within the string or 2-letter codes
+      const isBus = modeVal.includes('bus') || ['mb', 'cb', 'rb', 'tb'].includes(modeVal);
+      const isRail = modeVal.includes('rail') || ['hr', 'lr', 'cr', 'sr', 'mg', 'yr', 'cc'].includes(modeVal);
+
+      if (isBus) allData.bus.push(entry);
+      if (isRail) allData.rail.push(entry);
     });
 
     render();
@@ -249,10 +244,11 @@ function render() {
           }).join("")}
         </tbody>
       </table>
-      <div class="source-note" style="line-height: 1.5;">
-  <strong>Rider security:</strong> How often serious incidents affect passengers on bus and rail, by agency, with a six-month rolling trend and national comparison.<br>
-  <span style="opacity: 0.85;">Source: <a href="https://datahub.transportation.gov/dataset/pgwk-wjqa" target="_blank" style="color:var(--navy); text-decoration: none; border-bottom: 1px dotted var(--navy);">FTA National Transit Database</a></span>
-</div>`;
+      <div class="source-note" style="line-height: 1.5; padding: 10px 14px;">
+        <strong>Rider security:</strong> How often serious incidents affect passengers on bus and rail, by agency, with a six-month rolling trend and national comparison.<br>
+        <span style="opacity: 0.85;">Source: <a href="https://datahub.transportation.gov/dataset/pgwk-wjqa" target="_blank" style="color:var(--navy); text-decoration: none; border-bottom: 1px dotted var(--navy);">FTA National Transit Database</a></span>
+      </div>
+    </div>`;
 
   document.getElementById("count-label").textContent = `${rows.length} agencies · ${modeLabel}`;
 }
