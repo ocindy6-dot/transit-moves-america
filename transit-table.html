@@ -121,17 +121,24 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // CONFIGURATION
 // ─────────────────────────────────────────────────────────────────────────────
+// Helper function to dynamically calculate dates (formatted for the NTD API)
+const getDynamicDate = (monthsAgo) => {
+  const d = new Date();
+  d.setMonth(d.getMonth() - monthsAgo);
+  // Formats to match Socrata API requirement: YYYY-MM-DDT00:00:00.000
+  return d.toISOString().split('T')[0] + "T00:00:00.000";
+};
+
 const CONFIG = {
   BASE_URL:  "https://data.transportation.gov/resource/pgwk-wjqa.json",
   PAGE_SIZE: 10000,
 
   // Hard filters applied at the API level — only pull exactly the rows we need
   FILTERS: {
-    month_year_start: "2025-12-01T00:00:00.000",
-    month_year_end:   "2026-12-31T23:59:59.000",
+    month_year_start: getDynamicDate(4), // Automatically 4 months ago
+    month_year_end:   getDynamicDate(0), // Automatically today
     metric:           "event_count",
     event_type:       "Major Passenger Assaults and Homicides",
-    // rail_bus_ferry: "Bus" or "Rail" — handled in WHERE clause below
   },
 
   COLUMNS: {
