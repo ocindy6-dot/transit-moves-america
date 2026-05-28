@@ -20,14 +20,13 @@
     --row-alt:  #f7fafd;
     --amber-bg: #FAEEDA; --amber-tx: #633806;
   }
-  html, body {
+html, body {
     font-family: 'Open Sans', Arial, sans-serif;
     background: var(--bg); color: var(--ink);
     font-size: 14px; 
-    padding: 10px; /* Reduced padding for embedded views */
+    padding: 10px;
     margin: 0;
-    overflow-x: hidden; /* Prevents side-to-side scrolling */
-    /* Removed the min-height: 100vh which causes the double scroll */
+    overflow: hidden; /* CRITICAL: Deletes BOTH horizontal and vertical inner scrollbars */
   }
   .controls {
     display: flex; align-items: center; gap: 10px;
