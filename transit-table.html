@@ -20,13 +20,11 @@
     --row-alt:  #f7fafd;
     --amber-bg: #FAEEDA; --amber-tx: #633806;
   }
-html, body {
+  html, body {
     font-family: 'Open Sans', Arial, sans-serif;
     background: var(--bg); color: var(--ink);
-    font-size: 14px; 
-    padding: 10px;
-    margin: 0;
-    overflow: hidden; /* CRITICAL: Deletes BOTH horizontal and vertical inner scrollbars */
+    font-size: 14px; padding: 10px; margin: 0;
+    overflow: hidden; /* Removes the inner iframe scrollbar */
   }
   .controls {
     display: flex; align-items: center; gap: 10px;
@@ -72,7 +70,7 @@ html, body {
   tbody tr:hover { background: var(--blue-lt); }
   td { padding: 9px 12px; color: var(--ink-2); white-space: nowrap; }
   td.r { text-align: right; }
-  td.name { font-weight: 600; color: var(--ink); }
+  td.name { font-weight: 600; color: var(--ink); max-width: 250px; overflow: hidden; text-overflow: ellipsis; }
   .rate-chip {
     display: inline-block; padding: 2px 8px;
     border-radius: 4px; font-size: 11px; font-weight: 700;
@@ -81,6 +79,7 @@ html, body {
   .source-note {
     font-size: 10px; color: var(--muted);
     line-height: 1.5; padding: 10px 14px;
+    display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;
   }
   .state-msg {
     background: var(--card); border-radius: 10px; border: 0.5px solid var(--rule);
@@ -94,6 +93,15 @@ html, body {
   @keyframes spin { to { transform: rotate(360deg); } }
   .error-msg { color: #791F1F; }
   .progress-text { font-size: 11px; color: var(--muted); margin-top: 6px; }
+
+  /* Pagination styles */
+  .pag-controls { display: flex; gap: 5px; }
+  .pag-btn {
+    padding: 3px 10px; border: 1px solid var(--rule); background: #fff;
+    font-size: 11px; font-weight: 600; color: var(--navy); border-radius: 4px; cursor: pointer;
+  }
+  .pag-btn:disabled { color: var(--muted); background: #f0f0f0; cursor: not-allowed; border-color: #e0e0e0; }
+  .pag-btn:hover:not(:disabled) { background: var(--blue-lt); }
 </style>
 </head>
 <body>
@@ -123,9 +131,6 @@ const CONFIG = {
   BASE_URL:  "https://data.transportation.gov/resource/pgwk-wjqa.json",
   PAGE_SIZE: 10000,
 
-  // The rate column is already a 6-month rolling average baked into the data.
-  // We don't need a date range — just pull the most recent month per agency
-  // by sorting month_year DESC at the API level, then deduplicating in JS.
   FILTERS: {
     metric:     "event_count",
     event_type: "Major Passenger Assaults and Homicides"
@@ -142,16 +147,16 @@ const CONFIG = {
     month_year: "month_year"
   },
 
-  TOP_N: 25
+  ROWS_PER_PAGE: 10 // Changed from TOP_N to pagination display limit
 };
 // ─────────────────────────────────────────────────────────────────────────────
 
-let allData = { Bus: [], Rail: [] };
-let mode    = "Bus";
-let sortKey = "rate";
-let sortDir = "desc";
+let allData     = { Bus: [], Rail: [] };
+let mode        = "Bus";
+let sortKey     = "rate";
+let sortDir     = "desc";
+let currentPage = 0; // Track the current page row viewing context
 
-// ── Build the SOQL WHERE clause ───────────────────────────────────────────────
 function buildWhere() {
   const f = CONFIG.FILTERS;
   const c = CONFIG.COLUMNS;
@@ -162,12 +167,10 @@ function buildWhere() {
   ].join(" AND ");
 }
 
-// ── Paginated fetch, sorted newest-first, then deduplicate ───────────────────
 async function loadData() {
   const progressEl = document.getElementById("progress-text");
   let offset = 0;
   let total  = 0;
-  // seen key: "agency|mode" — keeps only the first (most recent) row per pair
   const seen = new Set();
   allData    = { Bus: [], Rail: [] };
 
@@ -185,11 +188,6 @@ async function loadData() {
 
       const page = await resp.json();
 
-      if (offset === 0 && page.length > 0) {
-        console.log("First row keys:",   Object.keys(page[0]));
-        console.log("First row sample:", page[0]);
-      }
-
       page.forEach(row => {
         const rate    = parseFloat(row[CONFIG.COLUMNS.rate]);
         const upt     = parseFloat(row[CONFIG.COLUMNS.upt]);
@@ -198,8 +196,6 @@ async function loadData() {
         if (isNaN(rate)) return;
         if (modeVal !== "Bus" && modeVal !== "Rail") return;
 
-        // Dedup key: one row per agency+mode combination (most recent wins
-        // because we sorted DESC before paginating)
         const key = `${row[CONFIG.COLUMNS.agency]}|${modeVal}`;
         if (seen.has(key)) return;
         seen.add(key);
@@ -222,7 +218,6 @@ async function loadData() {
       if (page.length < CONFIG.PAGE_SIZE) break;
     }
 
-    console.log(`Load complete — Bus: ${allData.Bus.length}, Rail: ${allData.Rail.length}`);
     render();
 
   } catch (err) {
@@ -231,7 +226,6 @@ async function loadData() {
       <div class="state-msg error-msg">
         <div style="font-weight:700;margin-bottom:6px;">Could not load data</div>
         <div style="font-size:12px;opacity:0.8;">${err.message}</div>
-        <div style="font-size:11px;margin-top:8px;opacity:0.6;">Check console for details.</div>
       </div>`;
     document.getElementById("count-label").textContent = "Error loading data";
   }
@@ -239,6 +233,7 @@ async function loadData() {
 
 function setMode(m, btn) {
   mode = m;
+  currentPage = 0; // Reset to page 1 on mode switch
   document.querySelectorAll(".t-btn").forEach(b => b.classList.remove("active"));
   btn.classList.add("active");
   render();
@@ -247,13 +242,20 @@ function setMode(m, btn) {
 function setSort(key) {
   if (sortKey === key) sortDir = sortDir === "asc" ? "desc" : "asc";
   else { sortKey = key; sortDir = "desc"; }
+  currentPage = 0; // Reset to page 1 on sort switch
+  render();
+}
+
+function changePage(step) {
+  currentPage += step;
   render();
 }
 
 function render() {
   const pool = allData[mode] || [];
 
-  const rows = [...pool].sort((a, b) => {
+  // Sort the full pool first
+  const sortedPool = [...pool].sort((a, b) => {
     let av, bv;
     if      (sortKey === "agency") { av = a.agency;   bv = b.agency;   }
     else if (sortKey === "uza")    { av = a.uza;       bv = b.uza;      }
@@ -264,19 +266,20 @@ function render() {
       return sortDir === "asc" ? av.localeCompare(bv) : bv.localeCompare(av);
     }
     return sortDir === "asc" ? av - bv : bv - av;
-  }).slice(0, CONFIG.TOP_N);
+  });
 
-  const modeLabel = mode;
+  // Paginate calculation
+  const startIdx = currentPage * CONFIG.ROWS_PER_PAGE;
+  const endIdx   = startIdx + CONFIG.ROWS_PER_PAGE;
+  const rows     = sortedPool.slice(startIdx, endIdx);
+  const totalPages = Math.ceil(sortedPool.length / CONFIG.ROWS_PER_PAGE);
 
   if (!rows.length) {
-    document.getElementById("table-container").innerHTML =
-      `<div class="state-msg">No data found for "${modeLabel}".<br>
-       <span style="font-size:11px;opacity:0.7;">Check console — filter values may not match the API exactly.</span></div>`;
-    document.getElementById("count-label").textContent = `0 agencies · ${modeLabel}`;
+    document.getElementById("table-container").innerHTML = `<div class="state-msg">No data found.</div>`;
+    document.getElementById("count-label").textContent = `0 agencies`;
     return;
   }
 
-  // Show the as-of date from the first row
   const asOf = rows[0].month
     ? new Date(rows[0].month).toLocaleDateString("en-US", { month: "long", year: "numeric" })
     : "latest available";
@@ -298,7 +301,7 @@ function render() {
         <tbody>
           ${rows.map(row => `
             <tr>
-              <td class="name">${row.agency}</td>
+              <td class="name" title="${row.agency}">${row.agency}</td>
               <td style="color:var(--muted);">${row.uza}</td>
               <td class="r" style="color:var(--muted);">
                 ${row.upt !== null ? row.upt.toLocaleString(undefined,{maximumFractionDigits:0}) : "—"}
@@ -308,19 +311,20 @@ function render() {
         </tbody>
       </table>
       <div class="source-note">
-        <strong>Rider security:</strong> Major passenger assaults &amp; homicides — event count rate (6-month rolling avg),
-        most recent data as of ${asOf}, bus and rail only.<br>
-        Source: <a href="https://data.transportation.gov/dataset/S-and-S-Agency-Profiles/pgwk-wjqa"
-          target="_blank"
-          style="color:var(--navy);text-decoration:none;border-bottom:1px dotted var(--navy);">
-          FTA National Transit Database
-        </a>
-        &nbsp;·&nbsp; Showing top ${rows.length} of ${pool.length.toLocaleString()} agencies by rate
+        <div>
+          <strong>As of:</strong> ${asOf} · Page ${currentPage + 1} of ${totalPages || 1}
+        </div>
+        <div class="pag-controls">
+          <button class="pag-btn" onclick="changePage(-1)" ${currentPage === 0 ? 'disabled' : ''}>Prev</button>
+          <button class="pag-btn" onclick="changePage(1)" ${currentPage >= totalPages - 1 ? 'disabled' : ''}>Next</button>
+        </div>
       </div>
     </div>`;
 
+  const displayStart = pool.length > 0 ? startIdx + 1 : 0;
+  const displayEnd   = Math.min(endIdx, pool.length);
   document.getElementById("count-label").textContent =
-    `${rows.length} of ${pool.length.toLocaleString()} agencies · ${modeLabel}`;
+    `${displayStart}-${displayEnd} of ${pool.length.toLocaleString()} agencies · ${mode}`;
 }
 
 loadData();
